@@ -83,7 +83,14 @@ def open_ds(url: str, retries: int = 3) -> xr.Dataset:
     last = None
     for i in range(retries):
         try:
-            return xr.open_dataset(url, decode_times=True)
+            raw = xr.open_dataset(url, decode_cf=False)
+            try:
+                if "tau" in raw.variables and raw["tau"].attrs.get("units") == "hours since analysis":
+                    raw["tau"].attrs.pop("units")
+                return xr.decode_cf(raw)
+            except Exception:
+                raw.close()
+                raise
         except Exception as exc:  # THREDDS hiccups are common
             last = exc
             time.sleep(3 * (i + 1))
