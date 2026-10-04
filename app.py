@@ -1,5 +1,6 @@
 """
-HYCOM Data Extractor - a step-by-step Streamlit app (data extraction only).
+Ocean Temperature Extractor - a step-by-step Streamlit app (data extraction only).
+Sources: HYCOM (no login) and Copernicus Marine (login entered at run time).
 
 Run locally:   streamlit run app.py
 Cloud:         see README.md (Streamlit Community Cloud, Cloud Run, any VM)
@@ -7,14 +8,17 @@ Cloud:         see README.md (Streamlit Community Cloud, Cloud Run, any VM)
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import date, timedelta
+from typing import cast
 
 import pandas as pd
 import streamlit as st
 
 import hycom_core as hc
 
-st.set_page_config(page_title="HYCOM Data Extractor", layout="wide")
+st.set_page_config(page_title="Ocean Temperature Extractor", layout="wide")
 
 STEPS = [
     "1 · Locations",
@@ -51,11 +55,51 @@ def init_state():
         "t1": date.today(),
         "depth_mode": "whole",
         "levels": [0, 4, 20, 30, 50],
+        "levels_cmems": [0.0, 5.0, 10.0, 20.0, 30.0, 50.0],
+        "custom_ids": "",
         "include_bottom": True,
         "hourly": False,
     }
+    ss["_cm_user"] = ""   # Copernicus login: kept in this session's memory only
+    ss["_cm_pass"] = ""
     ss.probe = None
     ss.results = None
+
+
+def get_creds():
+    """Copernicus login typed into the app (session memory only), or None."""
+    ss = st.session_state
+    user, pw = ss.get("_cm_user", ""), ss.get("_cm_pass", "")
+    return {"username": user, "password": pw} if user and pw else None
+
+
+def kind_of(source: str) -> str:
+    return hc.SOURCES[source]["kind"]
+
+
+def provider_of(source: str) -> str:
+    return "HYCOM" if kind_of(source) == "hycom" else "Copernicus Marine"
+
+
+def parse_depths(text: str):
+    """'0, 5 10;20' -> ([0.0, 5.0, 10.0, 20.0], [bad tokens])."""
+    vals, bad = [], []
+    for tok in re.split(r"[,\s;]+", text.strip()):
+        if not tok:
+            continue
+        try:
+            v = float(tok)
+            (vals if v >= 0 else bad).append(v if v >= 0 else tok)
+        except ValueError:
+            bad.append(tok)
+    return sorted(set(vals)), bad
+
+
+def current_depths(cfg):
+    if cfg["depth_mode"] == "whole":
+        return None
+    key = "levels" if kind_of(cfg["source"]) == "hycom" else "levels_cmems"
+    return [float(x) for x in cfg[key]]
 
 
 def clean_locs(df: pd.DataFrame):
@@ -65,14 +109,14 @@ def clean_locs(df: pd.DataFrame):
     for col in ("name", "lat", "lon"):
         if col not in d:
             d[col] = None
-    incomplete = d[["name", "lat", "lon"]].isna().any(axis=1)
+    incomplete = d["name"].isna() | d["lat"].isna() | d["lon"].isna()
     if incomplete.any():
         errors.append(f"{int(incomplete.sum())} row(s) are incomplete (need name, lat and lon).")
-        d = d[~incomplete]
-    d["name"] = d["name"].astype(str).str.strip()
+        d = cast(pd.DataFrame, d.loc[~incomplete])
+    d["name"] = d["name"].map(lambda x: str(x).strip())
     d["lat"] = pd.to_numeric(d["lat"], errors="coerce")
     d["lon"] = pd.to_numeric(d["lon"], errors="coerce")
-    d = d.dropna(subset=["lat", "lon"])
+    d = cast(pd.DataFrame, d.loc[d["lat"].notna() & d["lon"].notna()])
     if (d["name"] == "").any():
         errors.append("Every location needs a name.")
     if d["name"].duplicated().any():
@@ -85,7 +129,7 @@ def clean_locs(df: pd.DataFrame):
         errors.append("Add at least one location.")
     if len(d) > MAX_POINTS:
         errors.append(f"Maximum {MAX_POINTS} locations per run.")
-    return d.reset_index(drop=True), errors
+    return cast(pd.DataFrame, d.reset_index(drop=True)), errors
 
 
 def config_sig(locs: pd.DataFrame) -> str:
@@ -171,26 +215,53 @@ def step_source() -> bool:
         format_func=lambda k: hc.SOURCES[k]["label"],
     )
     meta = hc.SOURCES[cfg["source"]]
+    kind = meta["kind"]
     lo = meta["start"].date()
     hi = meta["end"].date() if meta["end"] is not None else date.today()
+    if cfg["source"] == "analysis":
+        ss = st.session_state
+        try:
+            coverage = ss.get("_analysis_coverage")
+            if coverage is None:
+                coverage = hc.analysis_coverage()
+                ss["_analysis_coverage"] = coverage
+        except Exception as exc:
+            st.error(f"Could not read the live HYCOM analysis date coverage: {exc}")
+            return False
+        coverage_start, coverage_end = (value.date() for value in coverage)
+        lo = max(lo, coverage_start)
+        hi = min(hi, coverage_end)
+        if lo > hi:
+            st.error(f"The HYCOM analysis feed has no data within the advertised range {lo} to {hi}.")
+            return False
 
     if cfg["source"] != cfg["_last_source"]:  # sensible defaults when switching
         cfg["_last_source"] = cfg["source"]
+        cfg["t1"] = hi
+        cfg["t0"] = max(lo, hi - timedelta(days=365))
+    elif cfg["t0"] > hi and cfg["t1"] > hi:
         cfg["t1"] = hi
         cfg["t0"] = max(lo, hi - timedelta(days=365))
 
     cfg["t0"] = min(max(cfg["t0"], lo), hi)
     cfg["t1"] = min(max(cfg["t1"], lo), hi)
 
-    st.caption(
-        f"Available: {lo} to {'today' if meta['end'] is None else hi}. "
-        "3-hourly, times in UTC. "
-        + (
-            "Includes the most recent days; forecast steps are excluded."
-            if cfg["source"] == "analysis"
-            else "Static dataset - ends 2015-12-30."
+    if kind == "hycom":
+        st.caption(
+            f"Available: {lo} to {hi}. "
+            "3-hourly, times in UTC. "
+            + (
+                "Coverage is read from the live HYCOM dataset; forecast steps are excluded."
+                if cfg["source"] == "analysis"
+                else "Static dataset - ends 2015-12-30."
+            )
         )
-    )
+    else:
+        st.caption(
+            "Daily means, times in UTC. The dates offered are nominal; the real coverage is "
+            "read from Copernicus Marine in step 4. "
+            + ("Forecast days are excluded." if meta.get("forecast") else "")
+        )
     a, b = st.columns(2)
     cfg["t0"] = a.date_input("From", cfg["t0"], min_value=lo, max_value=hi)
     cfg["t1"] = b.date_input("To", cfg["t1"], min_value=lo, max_value=hi)
@@ -199,7 +270,38 @@ def step_source() -> bool:
         st.error("'From' must be on or before 'To'.")
         return False
     days = (cfg["t1"] - cfg["t0"]).days + 1
-    st.info(f"{days} days ≈ {days * 8:,} time steps per location.")
+    per_day = 8 if kind == "hycom" else 1
+    st.info(f"{days} days ≈ {days * per_day:,} time steps per location.")
+
+    if kind == "cmems":
+        ss = st.session_state
+        st.markdown("**Copernicus Marine login**")
+        env_ok = bool(os.environ.get("COPERNICUSMARINE_SERVICE_USERNAME")
+                      and os.environ.get("COPERNICUSMARINE_SERVICE_PASSWORD"))
+        if env_ok:
+            st.success("A login is set on the server (environment variables). The boxes below are optional.")
+        u = st.text_input("Username (email)", value=ss.get("_cm_user", ""), key="cm_user_in")
+        p = st.text_input("Password", value=ss.get("_cm_pass", ""), type="password", key="cm_pass_in")
+        ss["_cm_user"], ss["_cm_pass"] = (u or "").strip(), (p or "")
+        st.caption(
+            "Used only in this browser session. It is never saved to disk or included in the "
+            "downloads, and 'Start over' clears it. Create an account at marine.copernicus.eu "
+            "if you do not have one."
+        )
+        with st.expander("Advanced: Copernicus dataset IDs"):
+            default_ids = ", ".join(meta["datasets"])
+            val = st.text_input(
+                "Dataset IDs, comma-separated (several are joined in time order)",
+                value=cfg.get("custom_ids") or default_ids,
+                key=f"ids_{cfg['source']}",
+            )
+            val = (val or "").strip()
+            cfg["custom_ids"] = "" if val == default_ids else val
+            st.caption("Leave as is unless step 4 says a dataset was not found; it then lists the IDs "
+                       f"that exist in {meta['product']}.")
+        if not (hc.have_login(get_creds())):
+            st.error("Enter your Copernicus Marine username and password to continue.")
+            return False
     return True
 
 
@@ -215,25 +317,45 @@ def step_depths() -> bool:
         else "Choose specific levels",
     )
     cfg["depth_mode"] = mode
+    kind = kind_of(cfg["source"])
     if mode == "levels":
-        cfg["levels"] = st.multiselect(
-            "Levels (m)", hc.HYCOM_LEVELS, default=[l for l in cfg["levels"] if l in hc.HYCOM_LEVELS]
-        )
-        st.caption("HYCOM has fixed levels (no 3 m, for example). Levels below the seabed are dropped.")
+        if kind == "hycom":
+            cfg["levels"] = st.multiselect(
+                "Levels (m)", hc.HYCOM_LEVELS, default=[l for l in cfg["levels"] if l in hc.HYCOM_LEVELS]
+            )
+            st.caption("HYCOM has fixed levels (no 3 m, for example). Levels below the seabed are dropped.")
+        else:
+            txt = st.text_input(
+                "Depths in metres, comma-separated",
+                value=", ".join(f"{v:g}" for v in cfg["levels_cmems"]),
+            )
+            vals, bad = parse_depths(txt or "")
+            if bad:
+                st.error("Not valid depths: " + ", ".join(map(str, bad)))
+            else:
+                cfg["levels_cmems"] = vals
+            st.caption("Each depth is matched to the nearest model level; the column names show the "
+                       "level actually used. Levels below the seabed are dropped.")
     cfg["include_bottom"] = st.checkbox(
         "Also add the bottom temperature (TeBottom) and the bottom depth", value=cfg["include_bottom"]
     )
-    cfg["hourly"] = (
-        st.radio(
-            "Time step",
-            ["3 h (native)", "1 h (linear interpolation)"],
-            index=1 if cfg["hourly"] else 0,
-            horizontal=True,
-        ).startswith("1 h")
-    )
-    if mode == "levels" and not cfg["levels"]:
-        st.error("Pick at least one level.")
-        return False
+    if kind == "hycom":
+        cfg["hourly"] = (
+            st.radio(
+                "Time step",
+                ["3 h (native)", "1 h (linear interpolation)"],
+                index=1 if cfg["hourly"] else 0,
+                horizontal=True,
+            ).startswith("1 h")
+        )
+    else:
+        cfg["hourly"] = False
+        st.caption("Copernicus data are daily means; no time interpolation is applied.")
+    if mode == "levels":
+        chosen = cfg["levels"] if kind == "hycom" else cfg["levels_cmems"]
+        if not chosen:
+            st.error("Pick at least one depth.")
+            return False
     return True
 
 
@@ -241,25 +363,30 @@ def step_check(locs: pd.DataFrame) -> bool:
     ss = st.session_state
     cfg = ss.cfg
     sig = config_sig(locs)
-    st.subheader("Check where each point lands on the HYCOM grid")
+    provider = provider_of(cfg["source"])
+    st.subheader("Check where each point lands on the model grid")
     st.caption(
-        "HYCOM is ~9 km resolution, so a point snaps to the nearest cell that is ocean. "
+        "The model grid is ~8-9 km, so a point snaps to the nearest cell that is ocean. "
         "Coastal points may move; this shows by how much."
     )
     if st.button("Check locations", type="primary"):
-        with st.spinner("Contacting HYCOM server..."):
+        with st.spinner(f"Contacting {provider}..."):
             try:
-                year = pd.Timestamp(cfg["t0"]).year if cfg["source"] == "reanalysis" else None
-                ds = hc.open_ds(hc.dataset_url(cfg["source"], year))
-                rows = []
-                for r in locs.itertuples():
-                    rows.append({"name": r.name, "req_lat": r.lat, "req_lon": r.lon,
-                                 **hc.probe_cell(ds, r.lat, r.lon)})
-                ds.close()
+                points = [
+                    {"name": str(rec["name"]), "lat": float(rec["lat"]), "lon": float(rec["lon"])}
+                    for rec in locs.to_dict("records")
+                ]
+                rows = hc.probe_points(
+                    cfg["source"], points, hc.to_ts(cfg["t0"]),
+                    creds=get_creds(), custom_ids=cfg.get("custom_ids", ""),
+                )
                 ss.probe = {"sig": sig, "rows": rows}
                 ss.results = None
             except Exception as exc:
-                st.error(f"Could not reach HYCOM: {exc}")
+                if isinstance(exc, hc.CmemsAuthError):
+                    st.error(str(exc))
+                else:
+                    st.error(f"Could not reach {provider}: {exc}")
                 ss.probe = None
 
     probe = ss.probe
@@ -279,11 +406,15 @@ def step_check(locs: pd.DataFrame) -> bool:
                 "Offset (km)": r.get("offset_km"),
                 "Water depth (m)": r.get("bottom_depth_m"),
                 "Levels with data": r.get("n_levels"),
+                "Dataset covers": (f"{r['coverage_start']} to {r['coverage_end']}"
+                                   if r.get("coverage_start") else "-"),
                 "Status": "OK" if r["ok"] else r.get("reason", "no ocean cell"),
             }
             for r in rows
         ]
     )
+    if all(v == "-" for v in table["Dataset covers"]):
+        table = table.drop(columns=["Dataset covers"])
     st.dataframe(table, hide_index=True)
 
     pts = []
@@ -292,7 +423,7 @@ def step_check(locs: pd.DataFrame) -> bool:
         if r["ok"]:
             pts.append({"lat": r["grid_lat"], "lon": r["grid_lon"], "color": ORANGE})
     st.map(pd.DataFrame(pts), latitude="lat", longitude="lon", color="color", size=1500)
-    st.caption("Blue = requested point, orange = HYCOM grid cell that will be used.")
+    st.caption("Blue = requested point, orange = model grid cell that will be used.")
 
     bad = [r["name"] for r in rows if not r["ok"]]
     if bad:
@@ -301,6 +432,25 @@ def step_check(locs: pd.DataFrame) -> bool:
     far = [r["name"] for r in rows if r["offset_km"] > 12]
     if far:
         st.warning("These points snap more than 12 km away: " + ", ".join(far))
+
+    # Copernicus: compare the requested period with the real dataset coverage.
+    t0, t1 = cfg["t0"], cfg["t1"]
+    outside, partial = [], []
+    for r in rows:
+        if not r.get("coverage_start"):
+            continue
+        c0, c1 = date.fromisoformat(r["coverage_start"]), date.fromisoformat(r["coverage_end"])
+        if t1 < c0 or t0 > c1:
+            outside.append(f"{r['name']} ({c0} to {c1})")
+        elif t0 < c0 or t1 > c1:
+            partial.append(f"{r['name']} ({c0} to {c1})")
+    if outside:
+        st.error("The requested period is outside the dataset coverage for: " + "; ".join(outside)
+                 + ". Change the dates in step 2.")
+        return False
+    if partial:
+        st.warning("The requested period is only partly covered, so you will get less data: "
+                   + "; ".join(partial))
     return True
 
 
@@ -313,11 +463,13 @@ def step_extract(locs: pd.DataFrame):
         st.warning("Settings changed - go back to step 4 and re-check the locations.")
         return
 
-    depths = None if cfg["depth_mode"] == "whole" else [float(x) for x in cfg["levels"]]
+    depths = current_depths(cfg)
+    spec = hc.SOURCES[cfg["source"]]
+    cadence = "hourly (interpolated)" if (cfg["hourly"] and spec["kind"] == "hycom") else f"{spec['step']} native"
     st.write(
-        f"**{len(ss.probe['rows'])} location(s)** · {cfg['t0']} → {cfg['t1']} · "
-        f"{'whole water column' if depths is None else str(len(depths)) + ' levels'} · "
-        f"{'hourly' if cfg['hourly'] else '3-hourly'}"
+        f"**{len(ss.probe['rows'])} location(s)** · {provider_of(cfg['source'])} · "
+        f"{cfg['t0']} → {cfg['t1']} · "
+        f"{'whole water column' if depths is None else str(len(depths)) + ' depths'} · {cadence}"
     )
     if st.button("Start extraction", type="primary"):
         rows = ss.probe["rows"]
@@ -332,9 +484,10 @@ def step_extract(locs: pd.DataFrame):
 
             try:
                 df = hc.extract_point(
-                    cfg["source"], r, pd.Timestamp(cfg["t0"]), pd.Timestamp(cfg["t1"]),
+                    cfg["source"], r, hc.to_ts(cfg["t0"]), hc.to_ts(cfg["t1"]),
                     depths=depths, include_bottom=cfg["include_bottom"],
                     hourly=cfg["hourly"], progress=cb,
+                    creds=get_creds(), custom_ids=cfg.get("custom_ids", ""),
                 )
                 data[r["name"]] = df
                 metas[r["name"]] = hc.build_metadata(r["name"], r["req_lat"], r["req_lon"], r, df, cfg)
@@ -368,14 +521,14 @@ def step_extract(locs: pd.DataFrame):
         d1.download_button(
             "Download Excel workbook (Summary + one sheet per site)",
             res["xlsx"],
-            file_name="hycom_extract.xlsx",
+            file_name="ocean_temperature_extract.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
         )
     d2.download_button(
         "Download ZIP (one CSV per site + metadata.json)",
         hc.make_zip(res["data"], res["metas"]),
-        file_name="hycom_extract.zip",
+        file_name="ocean_temperature_extract.zip",
         mime="application/zip",
     )
     if res.get("xlsx_err"):
@@ -413,8 +566,8 @@ def main():
     ss = st.session_state
 
     with st.sidebar:
-        st.title("HYCOM Data Extractor")
-        st.caption("Ocean temperature from HYCOM GOFS 3.1 at any coordinate.")
+        st.title("Ocean Temperature Extractor")
+        st.caption("HYCOM and Copernicus Marine ocean temperature at any coordinate.")
         for i, label in enumerate(STEPS):
             st.markdown(("**→ " + label + "**") if i == ss.step else ("✓ " + label if i < ss.step else label))
         st.divider()
