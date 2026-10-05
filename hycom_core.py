@@ -40,10 +40,21 @@ CMEMS_NAMES = {"var": "thetao", "lat": "latitude", "lon": "longitude", "depth": 
 HYCOM_CREDIT = "HYCOM + NCODA Global 1/12 degree analysis/reanalysis (GOFS 3.1), hycom.org."
 
 SOURCES = {
+    "espcd_v02": {
+        "kind": "hycom",
+        "names": HYCOM_NAMES,
+        "label": "HYCOM current - ESPC-D-V02 global analysis, 3-hourly",
+        "url": "https://tds.hycom.org/thredds/dodsC/ESPC-D-V02/t3z",
+        "start": pd.Timestamp("2024-08-10"),
+        "end": None,
+        "chunk_days": 1,
+        "step": "3 h",
+        "credit": "HYCOM ESPC-D-V02 global analysis, t3z archive; hycom.org.",
+    },
     "analysis": {
         "kind": "hycom",
         "names": HYCOM_NAMES,
-        "label": "HYCOM latest - GOFS 3.1 analysis (GLBy0.08, expt_93.0), 3-hourly",
+        "label": "HYCOM archived - GOFS 3.1 analysis (GLBy0.08, expt_93.0), 3-hourly",
         "url": "https://tds.hycom.org/thredds/dodsC/GLBy0.08/expt_93.0",
         "start": pd.Timestamp("2018-12-04"),
         "end": None,  # present
@@ -131,9 +142,12 @@ def dataset_url(source: str, year: Optional[int] = None) -> str:
     return url.format(year=year) if "{year}" in url else url
 
 
-def analysis_coverage() -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return the actual timestamp bounds exposed by the HYCOM analysis feed."""
-    ds = open_ds(dataset_url("analysis"))
+def hycom_coverage(source: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the actual timestamp bounds exposed by a HYCOM dataset."""
+    if SOURCES[source]["kind"] != "hycom":
+        raise ValueError(f"{source!r} is not a HYCOM source")
+    year = int(SOURCES[source]["start"].year) if source == "reanalysis" else None
+    ds = open_ds(dataset_url(source, year), year=year)
     try:
         times = pd.DatetimeIndex(ds["time"].values)
         if times.empty:
@@ -505,11 +519,11 @@ def extract_point(
                     frames.append(_column_to_frame(da, depths, include_bottom, nearest=True))
                 s = e + pd.Timedelta(seconds=1)
             ds.close()
-    elif source == "analysis":
-        ds = open_ds(dataset_url("analysis"))
-        step = pd.Timedelta(days=SOURCES["analysis"]["chunk_days"])
-        # The analysis file also holds forecast steps; never go past "now".
+    elif source in {"analysis", "espcd_v02"}:
+        ds = open_ds(dataset_url(source))
+        step = pd.Timedelta(days=spec["chunk_days"])
         now_utc = pd.Timestamp.now(tz="UTC").tz_localize(None)
+        # Some HYCOM analysis feeds expose forecast timestamps after their analyses.
         limit = min(t1 + pd.Timedelta(hours=23), now_utc)
         starts = []
         s = t0

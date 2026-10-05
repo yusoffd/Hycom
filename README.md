@@ -8,14 +8,17 @@ Extraction only - no prediction.
 
 | Choice in step 2 | Provider | Period | Time step | Login |
 |---|---|---|---|---|
-| HYCOM latest (GLBy0.08 expt_93.0) | HYCOM | 2018-12-04 to latest date in the live feed | 3-hourly | none |
+| HYCOM current (ESPC-D-V02) | HYCOM | 2024-08-10 to latest date in the live feed | 3-hourly | none |
+| HYCOM archived (GLBy0.08 expt_93.0) | HYCOM | 2018-12-04 to latest date in that feed | 3-hourly | none |
 | HYCOM historical (GLBv0.08 expt_53.X) | HYCOM | 1994 to 2015-12-30 | 3-hourly | none |
 | Copernicus GLORYS12V1 reanalysis | Copernicus Marine | 1993 onward | daily | **required** |
 | Copernicus global analysis & forecast | Copernicus Marine | recent years | daily | **required** |
 
-The app reads the current HYCOM analysis timestamp coverage when its date step opens,
-so the selectable period follows the data actually available from the feed. Copernicus
-data are daily means (no sub-daily signal). Forecast days are never returned.
+The default HYCOM source is ESPC-D-V02. HYCOM's public catalog lists current data
+under this product; the app reads its actual timestamp coverage and excludes future
+timestamps. HYCOM does not guarantee service availability or timely delivery.
+The older GOFS 3.1 analysis feed is kept as an archived source. Copernicus data are
+daily means (no sub-daily signal). Forecast days are never returned.
 
 ## The five steps in the app
 
@@ -29,9 +32,11 @@ data are daily means (no sub-daily signal). Forecast days are never returned.
 4. **Check grid cells** - shows the model cell each point snaps to (coastal
    points can be land at ~8-9 km resolution), the offset, the water depth and,
    for Copernicus, the dataset's real coverage dates.
-5. **Extract and download** - progress bar, quick-look chart, an **Excel
-   workbook** (Summary sheet + one sheet per site), a ZIP of CSVs with
-   `metadata.json`, and a CSV per site.
+5. **Extract and download** - select one checked location to extract at a time.
+   The default period is seven days; longer periods are allowed but show a
+   runtime warning. Current HYCOM requests are split into daily chunks. Each
+   extraction provides a quick-look chart, an **Excel workbook**, a ZIP of CSVs
+   with `metadata.json`, and a CSV for the selected location.
 
 ## Copernicus Marine login
 
@@ -96,7 +101,8 @@ period, the cadence and the dataset IDs.
 
 ## Notes
 
-- A long period at many points can take several minutes. Try a short period first.
+- Extract locations one at a time. Periods longer than seven days can take longer;
+  the app warns but does not block them.
 - HYCOM latest, HYCOM historical and the Copernicus products are different model
   runs; do not mix them in one series without checking they agree.
 - Copernicus `thetao` is potential temperature (degC).

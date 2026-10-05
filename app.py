@@ -28,6 +28,8 @@ STEPS = [
     "5 · Extract & download",
 ]
 MAX_POINTS = 20
+DEFAULT_RANGE_DAYS = 7
+LONG_RANGE_WARNING_DAYS = 7
 BLUE, ORANGE = "#1f77b4", "#ff7f0e"
 
 
@@ -49,9 +51,9 @@ def init_state():
     ss.locs_edit = ss.locs_base.copy()
     ss.editor_v = 0
     ss.cfg = {
-        "source": "analysis",
-        "_last_source": "analysis",
-        "t0": date.today() - timedelta(days=365),
+        "source": "espcd_v02",
+        "_last_source": "espcd_v02",
+        "t0": date.today() - timedelta(days=DEFAULT_RANGE_DAYS - 1),
         "t1": date.today(),
         "depth_mode": "whole",
         "levels": [0, 4, 20, 30, 50],
@@ -218,15 +220,16 @@ def step_source() -> bool:
     kind = meta["kind"]
     lo = meta["start"].date()
     hi = meta["end"].date() if meta["end"] is not None else date.today()
-    if cfg["source"] == "analysis":
+    if kind == "hycom" and meta["end"] is None:
         ss = st.session_state
         try:
-            coverage = ss.get("_analysis_coverage")
+            coverage_key = f"_hycom_coverage_{cfg['source']}"
+            coverage = ss.get(coverage_key)
             if coverage is None:
-                coverage = hc.analysis_coverage()
-                ss["_analysis_coverage"] = coverage
+                coverage = hc.hycom_coverage(cfg["source"])
+                ss[coverage_key] = coverage
         except Exception as exc:
-            st.error(f"Could not read the live HYCOM analysis date coverage: {exc}")
+            st.error(f"Could not read the live HYCOM dataset coverage: {exc}")
             return False
         coverage_start, coverage_end = (value.date() for value in coverage)
         lo = max(lo, coverage_start)
@@ -238,10 +241,14 @@ def step_source() -> bool:
     if cfg["source"] != cfg["_last_source"]:  # sensible defaults when switching
         cfg["_last_source"] = cfg["source"]
         cfg["t1"] = hi
-        cfg["t0"] = max(lo, hi - timedelta(days=365))
-    elif cfg["t0"] > hi and cfg["t1"] > hi:
+        cfg["t0"] = max(lo, hi - timedelta(days=DEFAULT_RANGE_DAYS - 1))
+    elif cfg["t0"] > hi:
         cfg["t1"] = hi
-        cfg["t0"] = max(lo, hi - timedelta(days=365))
+        cfg["t0"] = max(lo, hi - timedelta(days=DEFAULT_RANGE_DAYS - 1))
+    elif cfg["t1"] > hi:
+        period = cfg["t1"] - cfg["t0"]
+        cfg["t1"] = hi
+        cfg["t0"] = max(lo, hi - period)
 
     cfg["t0"] = min(max(cfg["t0"], lo), hi)
     cfg["t1"] = min(max(cfg["t1"], lo), hi)
@@ -252,7 +259,7 @@ def step_source() -> bool:
             "3-hourly, times in UTC. "
             + (
                 "Coverage is read from the live HYCOM dataset; forecast steps are excluded."
-                if cfg["source"] == "analysis"
+                if kind == "hycom" and meta["end"] is None
                 else "Static dataset - ends 2015-12-30."
             )
         )
@@ -272,6 +279,12 @@ def step_source() -> bool:
     days = (cfg["t1"] - cfg["t0"]).days + 1
     per_day = 8 if kind == "hycom" else 1
     st.info(f"{days} days ≈ {days * per_day:,} time steps per location.")
+    if days > LONG_RANGE_WARNING_DAYS:
+        st.warning(
+            f"Ranges longer than {LONG_RANGE_WARNING_DAYS} days can take substantially longer. "
+            "Extract one location at a time; for HYCOM, the current ESPC-D-V02 source is split "
+            "into daily requests."
+        )
 
     if kind == "cmems":
         ss = st.session_state
@@ -463,36 +476,43 @@ def step_extract(locs: pd.DataFrame):
         st.warning("Settings changed - go back to step 4 and re-check the locations.")
         return
 
+    probe_rows = ss.probe["rows"]
+    location_names = [row["name"] for row in probe_rows if row["ok"]]
+    if not location_names:
+        st.error("There are no checked ocean locations to extract.")
+        return
+    selected_name = st.selectbox("Location to extract", location_names, key="extract_location")
+    run_sig = json.dumps({"config": sig, "location": selected_name}, sort_keys=True)
     depths = current_depths(cfg)
     spec = hc.SOURCES[cfg["source"]]
     cadence = "hourly (interpolated)" if (cfg["hourly"] and spec["kind"] == "hycom") else f"{spec['step']} native"
     st.write(
-        f"**{len(ss.probe['rows'])} location(s)** · {provider_of(cfg['source'])} · "
+        f"**{selected_name}** · {provider_of(cfg['source'])} · "
         f"{cfg['t0']} → {cfg['t1']} · "
         f"{'whole water column' if depths is None else str(len(depths)) + ' depths'} · {cadence}"
     )
     if st.button("Start extraction", type="primary"):
-        rows = ss.probe["rows"]
+        row = next(r for r in probe_rows if r["name"] == selected_name)
         data, metas, errors = {}, {}, {}
         bar = st.progress(0.0)
         status = st.empty()
-        n = len(rows)
-        for i, r in enumerate(rows):
-            def cb(frac, msg, i=i, name=r["name"]):
-                bar.progress(min((i + frac) / n, 1.0))
-                status.write(f"**{name}** ({i + 1}/{n}) - {msg}")
+        def cb(frac, msg):
+            bar.progress(min(frac, 1.0))
+            status.write(f"**{selected_name}** - {msg}")
 
-            try:
-                df = hc.extract_point(
-                    cfg["source"], r, hc.to_ts(cfg["t0"]), hc.to_ts(cfg["t1"]),
-                    depths=depths, include_bottom=cfg["include_bottom"],
-                    hourly=cfg["hourly"], progress=cb,
-                    creds=get_creds(), custom_ids=cfg.get("custom_ids", ""),
-                )
-                data[r["name"]] = df
-                metas[r["name"]] = hc.build_metadata(r["name"], r["req_lat"], r["req_lon"], r, df, cfg)
-            except Exception as exc:
-                errors[r["name"]] = str(exc)
+        try:
+            df = hc.extract_point(
+                cfg["source"], row, hc.to_ts(cfg["t0"]), hc.to_ts(cfg["t1"]),
+                depths=depths, include_bottom=cfg["include_bottom"],
+                hourly=cfg["hourly"], progress=cb,
+                creds=get_creds(), custom_ids=cfg.get("custom_ids", ""),
+            )
+            data[selected_name] = df
+            metas[selected_name] = hc.build_metadata(
+                selected_name, row["req_lat"], row["req_lon"], row, df, cfg
+            )
+        except Exception as exc:
+            errors[selected_name] = str(exc)
         bar.progress(1.0)
         status.empty()
         xlsx, xlsx_err = None, None
@@ -503,19 +523,19 @@ def step_extract(locs: pd.DataFrame):
                 except Exception as exc:
                     xlsx_err = str(exc)
         ss.results = {
-            "sig": sig, "data": data, "metas": metas, "errors": errors,
+            "sig": run_sig, "data": data, "metas": metas, "errors": errors,
             "xlsx": xlsx, "xlsx_err": xlsx_err,
         }
 
     res = ss.results
-    if not res or res["sig"] != sig:
+    if not res or res["sig"] != run_sig:
         return
     for name, msg in res["errors"].items():
         st.error(f"{name}: {msg}")
     if not res["data"]:
         return
 
-    st.success(f"Extracted {len(res['data'])} location(s).")
+    st.success(f"Extracted {selected_name}.")
     d1, d2 = st.columns(2)
     if res.get("xlsx"):
         d1.download_button(
