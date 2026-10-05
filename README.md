@@ -10,7 +10,7 @@ Extraction only - no prediction.
 |---|---|---|---|---|
 | HYCOM latest (GLBy0.08 expt_93.0) | HYCOM | 2018-12-04 to latest date in the live feed | 3-hourly | none |
 | HYCOM historical (GLBv0.08 expt_53.X) | HYCOM | 1994 to 2015-12-30 | 3-hourly | none |
-| Copernicus GLORYS12V1 reanalysis | Copernicus Marine | 1993 to present | daily | **required** |
+| Copernicus GLORYS12V1 reanalysis | Copernicus Marine | 1993 onward | daily | **required** |
 | Copernicus global analysis & forecast | Copernicus Marine | recent years | daily | **required** |
 
 The app reads the current HYCOM analysis timestamp coverage when its date step opens,

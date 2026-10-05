@@ -67,11 +67,7 @@ SOURCES = {
         "names": CMEMS_NAMES,
         "label": "Copernicus Marine - GLORYS12V1 reanalysis, daily, 1993 to present",
         "product": "GLOBAL_MULTIYEAR_PHY_001_030",
-        # Two segments: the final reanalysis, then the interim extension.
-        "datasets": [
-            "cmems_mod_glo_phy_my_0.083deg_P1D-m",
-            "cmems_mod_glo_phy_myint_0.083deg_P1D-m",
-        ],
+        "datasets": ["cmems_mod_glo_phy_my_0.083deg_P1D-m"],
         "start": pd.Timestamp("1993-01-01"),
         "end": None,
         "step": "1 day",
