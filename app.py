@@ -210,6 +210,10 @@ def step_source() -> bool:
     cfg = st.session_state.cfg
     st.subheader("Which dataset and period?")
     keys = list(hc.SOURCES)
+    if cfg.get("source") not in keys:
+        cfg["source"] = "espcd_v02" if "espcd_v02" in keys else keys[0]
+    if cfg.get("_last_source") not in keys:
+        cfg["_last_source"] = cfg["source"]
     cfg["source"] = st.radio(
         "Dataset",
         keys,
