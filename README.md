@@ -100,7 +100,8 @@ that the app says so and the CSV/ZIP download still works.
 **CSV / ZIP**: one CSV per location: `datetime_utc`, `Te<depth>m` columns in degC
 for every level with data, plus `TeBottom` and `bottom_depth_m` if enabled.
 `metadata.json` records the requested point, the grid cell used, the offset, the
-period, the cadence and the dataset IDs.
+period, the cadence, the dataset IDs, and the minimum seabed temperature found in
+`TeBottom` across the extracted period (`min_bottom_temperature_c`).
 
 ## Notes
 

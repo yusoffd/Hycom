@@ -569,9 +569,10 @@ def build_metadata(name, lat, lon, cell, df, cfg) -> dict:
     te = [c for c in df.columns if c.startswith("Te")]
     spec = SOURCES[cfg["source"]]
     if spec["kind"] == "hycom":
-        cadence = "1 h (interpolated)" if cfg["hourly"] else f"{spec['step']} (native)"
+        cadence = "1 h (interpolated)" if cfg.get("hourly", False) else f"{spec['step']} (native)"
     else:
         cadence = f"{spec['step']} (native)"
+    bottom = df["TeBottom"] if "TeBottom" in df else pd.Series(dtype=float)
     return {
         "name": name,
         "requested_lat": lat,
@@ -591,6 +592,7 @@ def build_metadata(name, lat, lon, cell, df, cfg) -> dict:
         "non_empty_fraction": df[te].notna().mean().round(3).to_dict(),
         "median_bottom_depth_m": float(df["bottom_depth_m"].median())
         if "bottom_depth_m" in df else cell["bottom_depth_m"],
+        "min_bottom_temperature_c": float(bottom.min()) if bottom.notna().any() else None,
         "units": "degC",
     }
 
@@ -647,6 +649,7 @@ def make_xlsx(results: dict, metas: dict) -> bytes:
                 "Grid cell lon": m["grid_cell_lon"],
                 "Offset (km)": m["offset_km"],
                 "Water depth (m)": m["median_bottom_depth_m"],
+                "Min seabed temp (°C)": m.get("min_bottom_temperature_c"),
                 "Dataset": SOURCES[m["source"]]["label"],
                 "Start (UTC)": m["start_utc"],
                 "End (UTC)": m["end_utc"],
@@ -678,6 +681,7 @@ def make_xlsx(results: dict, metas: dict) -> bytes:
             f"Times are UTC. Temperatures are in degrees C (model variable: {', '.join(variables)}).",
             "Columns named Te<depth>m (for example Te20m) are the temperature at that depth in metres.",
             "TeBottom is the temperature at the deepest level with data; bottom_depth_m is that level's depth.",
+            "The minimum seabed temperature shown in the Summary sheet is the minimum of TeBottom across the extracted period.",
             "A blank cell means no data (for example, a level below the seabed).",
             "Values are for the HYCOM grid cell shown above, which can sit a few km from the requested point.",
         ] + [f"Source: {c}" for c in credits]

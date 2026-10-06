@@ -562,10 +562,11 @@ def step_extract(locs: pd.DataFrame):
     for tab, (name, df) in zip(tabs, res["data"].items()):
         with tab:
             m = res["metas"][name]
-            a, b, c = st.columns(3)
+            a, b, c, d = st.columns(4)
             a.metric("Rows", f"{m['rows']:,}")
             b.metric("Water depth (m)", f"{m['median_bottom_depth_m']:.0f}")
-            c.metric("Grid offset (km)", m["offset_km"])
+            c.metric("Min seabed temp (°C)", "n/a" if m.get("min_bottom_temperature_c") is None else f"{m['min_bottom_temperature_c']:.2f}")
+            d.metric("Grid offset (km)", m["offset_km"])
             st.subheader("Vertical temperature profile")
             st.caption(
                 "Temperature is plotted against the model depth levels available at this "
