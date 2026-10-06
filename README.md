@@ -35,8 +35,11 @@ daily means (no sub-daily signal). Forecast days are never returned.
 5. **Extract and download** - select one checked location to extract at a time.
    The default period is seven days; longer periods are allowed but show a
    runtime warning. Current HYCOM requests are split into daily chunks. Each
-   extraction provides a quick-look chart, an **Excel workbook**, a ZIP of CSVs
-   with `metadata.json`, and a CSV for the selected location.
+   extraction provides the existing depth-by-time data and downloads, plus a
+   vertical temperature profile for a selected UTC date and time. If bottom
+   temperature is enabled in step 3, its seabed point and depth are also shown
+   on the profile. The **Excel workbook**, ZIP of CSVs with `metadata.json`,
+   and location CSV retain the extracted depth and seabed data.
 
 ## Copernicus Marine login
 

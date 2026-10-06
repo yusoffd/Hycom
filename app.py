@@ -13,6 +13,7 @@ import re
 from datetime import date, timedelta
 from typing import cast
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -565,6 +566,110 @@ def step_extract(locs: pd.DataFrame):
             a.metric("Rows", f"{m['rows']:,}")
             b.metric("Water depth (m)", f"{m['median_bottom_depth_m']:.0f}")
             c.metric("Grid offset (km)", m["offset_km"])
+            st.subheader("Vertical temperature profile")
+            st.caption(
+                "Temperature is plotted against the model depth levels available at this "
+                "grid cell. Depth increases downward; missing levels are omitted. When "
+                "bottom temperature is enabled in step 3, the seabed/bottom point is shown "
+                "separately. It is the deepest valid model level, which may be above the "
+                "actual seabed."
+            )
+            first_day = df.index.min().date()
+            last_day = df.index.max().date()
+            profile_key = f"{hc.slug(name)}_{cfg['source']}_{cfg['t0']}_{cfg['t1']}"
+            profile_day = st.date_input(
+                "Profile date (UTC)",
+                value=last_day,
+                min_value=first_day,
+                max_value=last_day,
+                key=f"profile_date_{profile_key}",
+            )
+            day_times = df.index[df.index.date == profile_day]
+            time_labels = [timestamp.strftime("%H:%M") for timestamp in day_times]
+            selected_time = st.selectbox(
+                "Profile time (UTC)",
+                time_labels,
+                index=len(time_labels) - 1,
+                format_func=lambda value: f"{value} UTC",
+                key=f"profile_time_{profile_key}_{profile_day}",
+            )
+            selected_timestamp = day_times[time_labels.index(selected_time)]
+            profile_depths, profile_temperatures = [], []
+            for col in df.columns:
+                match = re.fullmatch(r"Te(\d+(?:\.\d+)?)m", str(col))
+                if match is not None:
+                    profile_depths.append(float(match.group(1)))
+                    profile_temperatures.append(df.at[selected_timestamp, col])
+            profile = pd.DataFrame(
+                {"depth_m": profile_depths, "temperature_c": profile_temperatures}
+            ).dropna().sort_values("depth_m")
+            seabed_profile = pd.DataFrame(columns=["depth_m", "temperature_c"])
+            has_seabed = (
+                "TeBottom" in df
+                and "bottom_depth_m" in df
+                and pd.notna(df.at[selected_timestamp, "TeBottom"])
+                and pd.notna(df.at[selected_timestamp, "bottom_depth_m"])
+            )
+            if has_seabed:
+                seabed_profile = pd.DataFrame(
+                    [{
+                        "depth_m": float(df.at[selected_timestamp, "bottom_depth_m"]),
+                        "temperature_c": float(df.at[selected_timestamp, "TeBottom"]),
+                    }]
+                )
+            if profile.empty and seabed_profile.empty:
+                st.info("No vertical or seabed temperature data are available at this time.")
+            else:
+                x_encoding = alt.X("temperature_c:Q", title="Temperature (°C)")
+                y_encoding = alt.Y(
+                    "depth_m:Q",
+                    title="Depth below sea surface (m)",
+                    scale=alt.Scale(reverse=True),
+                )
+                tooltip = [
+                    alt.Tooltip("depth_m:Q", title="Depth (m)", format=".1f"),
+                    alt.Tooltip(
+                        "temperature_c:Q",
+                        title="Temperature (°C)",
+                        format=".2f",
+                    ),
+                ]
+                if profile.empty:
+                    chart = (
+                        alt.Chart(seabed_profile)
+                        .mark_point(shape="diamond", filled=True, size=110, color=ORANGE)
+                        .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+                        .properties(height=360)
+                    )
+                else:
+                    chart = (
+                        alt.Chart(profile)
+                        .mark_line(point=True, color=BLUE)
+                        .encode(
+                            x=x_encoding,
+                            y=y_encoding,
+                            tooltip=tooltip,
+                        )
+                        .properties(height=360)
+                    )
+                    if not seabed_profile.empty:
+                        seabed_point = (
+                            alt.Chart(seabed_profile)
+                            .mark_point(shape="diamond", filled=True, size=110, color=ORANGE)
+                            .encode(x=x_encoding, y=y_encoding, tooltip=tooltip)
+                        )
+                        chart = chart + seabed_point
+                st.altair_chart(chart, use_container_width=True)
+            if not seabed_profile.empty:
+                bottom_cols = st.columns(2)
+                bottom_cols[0].metric(
+                    "Seabed / bottom temperature (°C)",
+                    f"{seabed_profile.iloc[0]['temperature_c']:.2f}",
+                )
+                bottom_cols[1].metric(
+                    "Seabed / bottom depth (m)",
+                    f"{seabed_profile.iloc[0]['depth_m']:.1f}",
+                )
             te = [col for col in df.columns if col.startswith("Te")]
             pick = st.multiselect("Quick look", te, default=te[:1] + te[-1:], key=f"pick_{name}")
             if pick:
